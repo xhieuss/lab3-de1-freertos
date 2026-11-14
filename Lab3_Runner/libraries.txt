@@ -1,0 +1,4 @@
+PubSubClient
+Adafruit BMP085 Library
+Adafruit Unified Sensor
+Adafruit BusIO

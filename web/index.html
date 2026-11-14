@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lab 3 - Giam sat nguoi chay (ESP32 + BMP180 + MQTT)</title>
+
+<!-- MQTT client cho trinh duyet (MQTT over WebSocket) -->
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<!-- Thu vien ve bieu do -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+<style>
+  :root {
+    --bg:#0f172a; --card:#1e293b; --txt:#e2e8f0;
+    --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; padding:18px; background:var(--bg); color:var(--txt);
+    font-family: "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  h1 { font-size:20px; text-align:center; margin:0 0 4px; }
+  .sub { text-align:center; font-size:13px; opacity:.7; margin-bottom:16px; }
+
+  /* ---------- thanh cong cu ---------- */
+  .toolbar {
+    display:flex; flex-wrap:wrap; gap:8px;
+    justify-content:center; align-items:center; margin-bottom:12px;
+  }
+  .input {
+    background:#0b1220; color:var(--txt); border:1px solid #334155;
+    border-radius:8px; padding:8px 10px; font-size:13px; width:250px;
+  }
+  .badge { padding:6px 12px; border-radius:999px; font-size:12px;
+           font-weight:700; }
+  .badge-on  { background:rgba(34,197,94,.18); color:var(--ok);
+               border:1px solid var(--ok); }
+  .badge-off { background:rgba(239,68,68,.18); color:var(--bad);
+               border:1px solid var(--bad); }
+  .stat { font-size:12px; opacity:.8; }
+
+  /* ---------- the hien thi du lieu (class="card") ---------- */
+  .grid {
+    display:grid; gap:14px; margin-bottom:14px;
+    grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  }
+  .grid-2 {
+    display:grid; gap:14px; margin-bottom:14px;
+    grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+  }
+  .card {
+    background:var(--card); border:1px solid #334155; border-radius:14px;
+    padding:16px; text-align:center; box-shadow:0 6px 18px rgba(0,0,0,.25);
+  }
+  .card-title {
+    font-size:13px; text-transform:uppercase; letter-spacing:1px;
+    opacity:.75; margin-bottom:8px;
+  }
+  .value { font-size:38px; font-weight:800; line-height:1; }  /* the so lieu */
+  .unit  { font-size:13px; opacity:.7; margin-top:6px; }
+  .card.alert-on  { border-color:var(--bad);
+                    box-shadow:0 0 18px rgba(239,68,68,.45); }
+  .card.alert-off { border-color:#334155; }
+
+  /* ---------- nut dieu khien ---------- */
+  .btn {
+    border:0; border-radius:10px; padding:12px 22px; font-size:14px;
+    font-weight:700; cursor:pointer; background:#334155; color:var(--txt);
+    transition:.15s;
+  }
+  .btn:hover { filter:brightness(1.2); }
+  .btn-on  { background:var(--ok); color:#06231a; }
+  .btn-off { background:#475569; }
+  .btn-buz { background:var(--warn); color:#2b1a02; }
+  .btn-sm  { padding:8px 14px; font-size:12.5px; font-weight:600; }
+
+  /* ---------- canh bao loi thu vien ---------- */
+  .banner {
+    background:rgba(239,68,68,.2); border:1px solid var(--bad);
+    color:#fecaca; border-radius:10px; padding:12px; margin-bottom:14px;
+    font-size:13px; text-align:center;
+  }
+</style>
+</head>
+<body>
+
+<h1>HỆ THỐNG GIÁM SÁT &amp; CẢNH BÁO NGƯỜI CHẠY</h1>
+<div class="sub">
+  ESP32 + BMP180 &nbsp;|&nbsp; MQTT Broker &nbsp;|&nbsp; Bùi Xuân Hiếu
+</div>
+
+<div id="libErr" class="banner" style="display:none"></div>
+
+<!-- ================= THANH KET NOI ================= -->
+<div class="toolbar">
+  <span id="conn" class="badge badge-off">MẤT KẾT NỐI</span>
+  <input id="host" class="input" list="brokerlist"
+         value="wss://test.mosquitto.org:8081/mqtt" />
+  <datalist id="brokerlist">
+    <option value="wss://test.mosquitto.org:8081/mqtt"></option>
+    <option value="ws://test.mosquitto.org:8080/mqtt"></option>
+    <option value="ws://localhost:9001"></option>
+    <option value="ws://192.168.1.185:9001"></option>
+    <option value="wss://broker.hivemq.com:8884/mqtt"></option>
+  </datalist>
+  <button class="btn btn-sm" onclick="connectBroker()">Kết nối Broker</button>
+  <span class="badge" style="background:#0b1220">
+    Thiết bị: <b id="devstatus">--</b>
+  </span>
+</div>
+
+<!-- ================= CHON NHANH BROKER ================= -->
+<div class="toolbar">
+  <span class="stat">Chọn nhanh:</span>
+  <button class="btn btn-sm" onclick="setBroker('wss://test.mosquitto.org:8081/mqtt')">
+    Broker công khai - bảo mật (wss)</button>
+  <button class="btn btn-sm" onclick="setBroker('ws://test.mosquitto.org:8080/mqtt')">
+    Broker công khai (ws)</button>
+  <button class="btn btn-sm" onclick="setBroker('ws://localhost:9001')">
+    Mosquitto trên máy tính</button>
+  <button class="btn btn-sm" onclick="setBroker('ws://192.168.1.185:9001')">
+    Máy tính trong mạng LAN</button>
+</div>
+<div class="toolbar"><span id="stat" class="stat">Chưa nhận bản tin nào.</span></div>
+
+<!-- ================= THE DU LIEU (class="card") ================= -->
+<div class="grid">
+  <div class="card">
+    <div class="card-title">Nhiệt độ</div>
+    <div id="temp" class="value">--</div>
+    <div class="unit">°C</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Áp suất khí quyển</div>
+    <div id="press" class="value">--</div>
+    <div class="unit">hPa</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Độ cao (so với mực nước biển)</div>
+    <div id="alt" class="value">--</div>
+    <div class="unit">m</div>
+  </div>
+  <div id="cardAlert" class="card alert-off">
+    <div class="card-title">Trạng thái cảnh báo</div>
+    <div id="alert" class="value" style="font-size:22px">--</div>
+    <div class="unit" id="alertSub">Chưa có dữ liệu</div>
+  </div>
+</div>
+
+<!-- ================= 2 BIEU DO REALTIME ================= -->
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Biểu đồ nhiệt độ theo thời gian thực</div>
+    <canvas id="chartT" height="150"></canvas>
+  </div>
+  <div class="card">
+    <div class="card-title">Biểu đồ độ cao theo thời gian thực</div>
+    <canvas id="chartH" height="150"></canvas>
+  </div>
+</div>
+
+<!-- ================= NUT DIEU KHIEN CO CAU CHAP HANH ================= -->
+<div class="grid">
+  <div class="card">
+    <div class="card-title">Điều khiển LED (manual)</div>
+    <button id="btnLed" class="btn btn-off" onclick="toggleLed()">LED: TẮT</button>
+  </div>
+  <div class="card">
+    <div class="card-title">Điều khiển Loa cảnh báo (manual)</div>
+    <button id="btnBuz" class="btn btn-buz btn-off" onclick="toggleBuzzer()">
+      LOA: TẮT</button>
+  </div>
+  <div class="card">
+    <div class="card-title">Chế độ hoạt động</div>
+    <button id="btnMode" class="btn btn-on" onclick="toggleMode()">AUTO</button>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   CAU HINH - SUA O DAY
+   BROKER_URL : dia chi MQTT over WebSocket cua broker
+     + Broker cong khai     : wss://test.mosquitto.org:8081/mqtt   (bao mat,
+                              dung duoc ke ca khi mo file truc tiep file://)
+                              hoac ws://test.mosquitto.org:8080/mqtt
+     + Mosquitto tren may   : ws://localhost:9001
+     + May tinh trong LAN   : ws://192.168.1.185:9001  (phai mo trang qua
+                              http://, vi trinh duyet chan ws:// toi IP LAN
+                              khi trang mo bang file://)
+   LUU Y: neu trang mo bang file:// thi trinh duyet se CHAN cac dia chi
+   ws:// toi host khac localhost (mixed content) -> dung wss:// hoac mo
+   trang qua http:// (vi du: python -m http.server 8000).
+   TB : tien to topic, PHAI TRUNG voi #define TB trong Lab3_Runner.ino
+                Khi dung broker cong khai nen them tien to rieng, vi du
+                "lab3/runner/bxh-e42a" de khong trung voi nguoi khac.
+   ===================================================================== */
+const BROKER_URL = "wss://test.mosquitto.org:8081/mqtt";
+const TB = "lab3/runner/bxh-e42a";
+const MAX_POINTS = 60;
+
+/* ---- Ten cac topic (phai trung voi chuong trinh ESP32) ---- */
+const TOPIC = {
+  temp:    TB + "/temp",
+  press:   TB + "/press",
+  alt:     TB + "/alt",
+  alert:   TB + "/alert",
+  status:  TB + "/status",
+  ledSt:   TB + "/led/state",
+  buzSt:   TB + "/buzzer/state",
+  modeSt:  TB + "/mode/state",
+  ledSet:  TB + "/led/set",
+  buzSet:  TB + "/buzzer/set",
+  modeSet: TB + "/mode/set"
+};
+const ALERT_TEXT = {
+  "0": "BÌNH THƯỜNG",  "1": "NHIỆT ĐỘ CAO",
+  "2": "NHIỆT ĐỘ THẤP", "3": "ĐỘ CAO ĐỘT NGỘT"
+};
+
+let client = null, ledOn = false, buzOn = false, modeAuto = true;
+let msgCount = 0;
+
+/* Neu dia chi khong co duong dan (vi ws://host:8080) thi thu them /mqtt,
+   vi mot so broker cong khai chi nhan MQTT o duong dan /mqtt. */
+function candidatesFor(url) {
+  const u = url.replace(/\/+$/, "");
+  return /^wss?:\/\/[^/]+\/.+/.test(u) ? [u] : [u + "/mqtt", u];
+}
+
+let cands = [], candIdx = 0, connectSeq = 0;
+
+/* Trang mo bang file:// la "secure context" -> trinh duyet chan ws:// toi host
+   khac localhost. Ham nay canh bao truoc de khoi mat thoi gian doan loi. */
+function canhBaoMixedContent(url) {
+  if (location.protocol !== "file:") return "";
+  const m = url.match(/^ws:\/\/([^/:]+)/i);
+  if (!m) return "";
+  const h = m[1].toLowerCase();
+  if (h === "localhost" || h === "127.0.0.1") return "";
+  return "Trình duyệt chặn ws:// tới " + m[1] + " khi trang mở bằng file:// "
+       + "(mixed content). Dùng wss:// (ví dụ wss://test.mosquitto.org:8081/mqtt) "
+       + "hoặc mở trang qua http:// bằng lệnh: python -m http.server 8000";
+}
+
+/* ============ 2. KET NOI MQTT BROKER (MQTT over WebSocket) ============ */
+function connectBroker() {
+  if (typeof mqtt === "undefined") {
+    showError("Chưa tải được thư viện mqtt.js. Kiểm tra kết nối Internet rồi "
+              + "tải lại trang (F5).");
+    return;
+  }
+  const url0 = document.getElementById("host").value.trim();
+  const canhBao = canhBaoMixedContent(url0);
+  cands = candidatesFor(url0);
+  candIdx = 0;
+  openCandidate();
+  if (canhBao) { showError(canhBao); document.getElementById("stat").textContent = canhBao; }
+}
+
+function openCandidate() {
+  const url = cands[candIdx];
+  if (client) { try { client.end(true); } catch (e) {} }
+
+  setConn(false, "Đang kết nối " + url + " ...");
+  document.getElementById("stat").textContent =
+    "Đang kết nối " + url + " ... (broker công khai có thể chậm, chờ ~10 s)";
+
+  const seq = ++connectSeq;
+  let soLanKetNoiDuoc = 0;
+
+  // clientId ngau nhien: cho phep nhieu trinh duyet cung xem dashboard
+  client = mqtt.connect(url, {
+    clientId: "web-runner-" + Math.random().toString(16).slice(2, 8),
+    reconnectPeriod: 2500,          // tu dong thu lai moi 2,5 s
+    connectTimeout: 10000,          // cho toi da 10 s
+    keepalive: 30
+  });
+
+  // 3. Ket noi thanh cong -> dang ky nhan tat ca topic
+  client.on("connect", () => {
+    soLanKetNoiDuoc++;
+    setConn(true, "ĐÃ KẾT NỐI BROKER");
+    Object.values(TOPIC).filter(t => !t.endsWith("/set")).forEach(t => client.subscribe(t));
+    document.getElementById("stat").textContent =
+      "Đã kết nối " + url + ", đang chờ dữ liệu từ ESP32...";
+  });
+  client.on("reconnect", () => {
+    if (seq === connectSeq)
+      document.getElementById("stat").textContent = "Đang thử kết nối lại...";
+  });
+  client.on("close", () => {
+    if (seq !== connectSeq) return;          // da chuyen sang dia chi khac
+    if (!soLanKetNoiDuoc && candIdx + 1 < cands.length) {
+      candIdx++;                             // thu dia chi/thu muc tiep theo
+      openCandidate();
+      return;
+    }
+    setConn(false, "MẤT KẾT NỐI - kiểm tra broker: " + url);
+  });
+  client.on("error", (e) => {
+    if (seq !== connectSeq) return;
+    setConn(false, "LỖI KẾT NỐI");
+    document.getElementById("stat").textContent =
+      "Không kết nối được " + url + " (" + e.message + "). Kiểm tra: broker đã "
+      + "chạy chưa, đúng cổng WebSocket chưa, và ESP32 đang gửi cùng tiền tố "
+      + "topic chưa.";
+  });
+
+  // 4. Nhan du lieu tu ESP32 -> cap nhat the HTML, bieu do
+  client.on("message", (topic, payload) => {
+    const v = payload.toString();
+    const t = new Date().toLocaleTimeString("vi-VN");
+    // topic .../set chi la lenh do chinh trang web gui di -> khong tinh vao
+    // thong ke du lieu nhan tu ESP32
+    if (!topic.endsWith("/set")) {
+      msgCount++;
+      document.getElementById("stat").textContent =
+        "Đã nhận " + msgCount + " bản tin | cuối: " + topic + " = " + v + " (" + t + ")";
+    }
+    switch (topic) {
+      case TOPIC.temp:
+        setValue("temp", v);              // the "Nhiệt độ"
+        addPoint(chartT, parseFloat(v));  // bieu do nhiet do
+        break;
+      case TOPIC.press:
+        setValue("press", v);
+        break;
+      case TOPIC.alt:
+        setValue("alt", v);               // the "Độ cao"
+        addPoint(chartH, parseFloat(v));  // bieu do do cao
+        break;
+      case TOPIC.alert:
+        updateAlert(v);
+        break;
+      case TOPIC.status:
+        document.getElementById("devstatus").textContent =
+          (v === "online" ? "ONLINE" : "OFFLINE");
+        break;
+      case TOPIC.ledSt:  setLed(parseInt(v) === 1);  break;
+      case TOPIC.buzSt:  setBuz(parseInt(v) === 1);  break;
+      case TOPIC.modeSt: setMode(v === "auto");      break;
+    }
+  });
+}
+
+function setBroker(url) {
+  document.getElementById("host").value = url;
+  connectBroker();
+}
+
+/* ============ 5. HIEN THI DU LIEU LEN THE class="card" ============ */
+function setValue(id, v) { document.getElementById(id).textContent = v; }
+
+function setConn(ok, text) {
+  const b = document.getElementById("conn");
+  b.textContent = text || (ok ? "ĐÃ KẾT NỐI BROKER" : "MẤT KẾT NỐI");
+  b.className = "badge " + (ok ? "badge-on" : "badge-off");
+}
+
+function updateAlert(code) {
+  const card = document.getElementById("cardAlert");
+  const isAlert = code !== "0";
+  document.getElementById("alert").textContent = ALERT_TEXT[code] || code;
+  document.getElementById("alertSub").textContent =
+    isAlert ? "Vượt ngưỡng cảnh báo" : "Không có cảnh báo";
+  card.className = "card " + (isAlert ? "alert-on" : "alert-off");
+}
+
+function setLed(on) {
+  ledOn = on;
+  const b = document.getElementById("btnLed");
+  b.textContent = "LED: " + (on ? "BẬT" : "TẮT");
+  b.className = "btn " + (on ? "btn-on" : "btn-off");
+}
+
+function setBuz(on) {
+  buzOn = on;
+  const b = document.getElementById("btnBuz");
+  b.textContent = "LOA: " + (on ? "BẬT" : "TẮT");
+  b.className = "btn btn-buz " + (on ? "btn-on" : "btn-off");
+}
+
+function setMode(auto) {
+  modeAuto = auto;
+  const b = document.getElementById("btnMode");
+  b.textContent = auto ? "AUTO" : "MANUAL";
+  b.className = "btn " + (auto ? "btn-on" : "btn-off");
+}
+
+/* Trang thai cap nhat sau khi ESP32 phan hoi. */
+function toggleLed() {
+  if (!client || !client.connected) { warnNoBroker(); return; }
+
+  const nextLed = !ledOn;
+  client.publish(TOPIC.ledSet, nextLed ? "1" : "0");
+  document.getElementById("stat").textContent =
+    "Đã gửi lệnh LED = " + (nextLed ? "1 (BẬT)" : "0 (TẮT)") + ", chờ ESP32 xác nhận...";
+}
+function toggleBuzzer() {
+  if (!client || !client.connected) { warnNoBroker(); return; }
+
+  const nextBuz = !buzOn;
+  client.publish(TOPIC.buzSet, nextBuz ? "1" : "0");
+  document.getElementById("stat").textContent =
+    "Đã gửi lệnh LOA = " + (nextBuz ? "1 (BẬT)" : "0 (TẮT)") + ", chờ ESP32 xác nhận...";
+}
+function toggleMode() {
+  if (!client || !client.connected) { warnNoBroker(); return; }
+  const nextMode = modeAuto ? "manual" : "auto";
+  client.publish(TOPIC.modeSet, nextMode);
+  document.getElementById("stat").textContent =
+    "Đã gửi chế độ " + nextMode.toUpperCase();
+}
+function warnNoBroker() {
+  document.getElementById("stat").textContent =
+    "Chưa kết nối broker - bấm \"Kết nối Broker\" trước khi điều khiển.";
+}
+
+/* ============ 6. BIEU DO REALTIME (Chart.js) ============ */
+function newChart(canvasId, label, color, unit) {
+  return new Chart(document.getElementById(canvasId), {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: [{
+        label: label, data: [], borderColor: color,
+        backgroundColor: color + "33", borderWidth: 2,
+        tension: .3, pointRadius: 0, fill: true
+      }]
+    },
+    options: {
+      animation: false, responsive: true,
+      plugins: { legend: { labels: { color: "#e2e8f0" } } },
+      scales: {
+        x: {
+          ticks: { color: "#94a3b8", maxTicksLimit: 6 },
+          grid:  { color: "#334155" }
+        },
+        y: {
+          ticks: { color: "#94a3b8" }, grid: { color: "#334155" },
+          title: { display: true, text: unit, color: "#94a3b8" }
+        }
+      }
+    }
+  });
+}
+
+function addPoint(chart, y) {
+  if (!chart || !Number.isFinite(y)) return;
+  const t = new Date().toLocaleTimeString("vi-VN");
+  chart.data.labels.push(t);
+  chart.data.datasets[0].data.push(y);
+  while (chart.data.labels.length > MAX_POINTS) {   // giu 60 diem gan nhat
+    chart.data.labels.shift();
+    chart.data.datasets[0].data.shift();
+  }
+  chart.update("none");
+}
+
+function showError(text) {
+  const b = document.getElementById("libErr");
+  b.textContent = text;
+  b.style.display = "block";
+}
+
+/* ============ 7. KHOI DONG ============ */
+let chartT = null, chartH = null;
+window.addEventListener("load", () => {
+  const thieu = [];
+  if (typeof mqtt === "undefined")  thieu.push("mqtt.js (unpkg.com)");
+  if (typeof Chart === "undefined") thieu.push("Chart.js (jsdelivr.net)");
+  if (thieu.length) {
+    showError("Không tải được thư viện: " + thieu.join(", ")
+              + ". Cần Internet khi mở trang, sau đó bấm F5 để tải lại.");
+  }
+  if (typeof Chart !== "undefined") {
+    chartT = newChart("chartT", "Nhiệt độ (°C)", "#f97316", "°C");
+    chartH = newChart("chartH", "Độ cao (m)",    "#38bdf8", "m");
+  }
+  document.getElementById("host").value = BROKER_URL;   // dia chi mac dinh
+  connectBroker();                                      // tu ket noi khi mo trang
+});
+</script>
+</body>
+</html>
+
+

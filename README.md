@@ -1,7 +1,8 @@
 # Lab 3 · Đề 1 · Giám sát và cảnh báo người chạy
 
 **Sinh viên:** Bùi Xuân Hiếu  
-**Lớp:** Cần xác nhận  
+**MSV:** 231432231
+**Lớp:** N01 
 **Project Wokwi:** [Mở mô phỏng Lab 3 – Đề 1](https://wokwi.com/projects/480651749622503425)
 
 ## Cách chạy
